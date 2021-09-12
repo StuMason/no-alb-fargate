@@ -148,7 +148,7 @@ Resources:
         Fn::ImportValue:  
           !Sub "${ClusterStackName}-cluster-name"
       ServiceName: !Sub "${AppName}-${AppEnv}"
-      DesiredCount: 0
+      DesiredCount: 1
       DeploymentConfiguration:
         MaximumPercent: 200
         MinimumHealthyPercent: 100
@@ -156,10 +156,9 @@ Resources:
       LaunchType: FARGATE
       ServiceRegistries:
         - RegistryArn: !GetAtt DiscoveryService.Arn
-          Port: 80
       NetworkConfiguration: 
         AwsvpcConfiguration:
-          AssignPublicIp: DISABLED
+          AssignPublicIp: ENABLED #hmmm...
           Subnets:
             - Fn::ImportValue: !Sub "${ClusterStackName}-public-subnet-one"
             - Fn::ImportValue: !Sub "${ClusterStackName}-public-subnet-two"
@@ -170,20 +169,18 @@ Resources:
   DiscoveryService:
     Type: AWS::ServiceDiscovery::Service
     Properties: 
-      Description: Discovery Service for the Demo Application
+      Description: !Sub Discovery Service for ${AppName}-${AppEnv}
       DnsConfig:
         RoutingPolicy: MULTIVALUE
         DnsRecords:
           - TTL: 60
             Type: A
-          - TTL: 60
-            Type: SRV
       HealthCheckCustomConfig: 
         FailureThreshold: 1
       Name: !Sub '${AppName}-${AppEnv}'
       NamespaceId: 
         Fn::ImportValue: 
-          !Sub ${ClusterStackName}-namespace
+          !Sub ${ClusterStackName}-public-namespace
   # S3Bucket:
   #   Type: AWS::S3::Bucket
   #   Properties:

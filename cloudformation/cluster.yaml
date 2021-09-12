@@ -123,17 +123,26 @@ Resources:
       ClusterSettings:
         - Name: containerInsights
           Value: enabled
-  ClusterNamespace:
+  ClusterPrivateNamespace:
     Type: AWS::ServiceDiscovery::PrivateDnsNamespace
     Properties:
-        Name: rt.codes
+        Name: private.rt.codes
         Vpc: !Ref VPC
+  ClusterPublicNamespace:
+    Type: AWS::ServiceDiscovery::PublicDnsNamespace
+    Properties:
+        Name: rt.codes
 Outputs:
-  Namespace:
-    Description: The namespace for the cluster
-    Value: !Ref ClusterNamespace
+  PrivateNamespace:
+    Description: The private DNS namespace for the cluster
+    Value: !Ref ClusterPrivateNamespace
     Export:
-      Name: !Sub "${AWS::StackName}-namespace"
+      Name: !Sub "${AWS::StackName}-private-namespace"
+  PublicNamespace:
+    Description: The public DNS namespace for the cluster
+    Value: !Ref ClusterPublicNamespace
+    Export:
+      Name: !Sub "${AWS::StackName}-public-namespace"
   ECSTaskExecutionRole:
     Description: The ARN of the ECS role
     Value: !GetAtt 'ECSTaskExecutionRole.Arn'
