@@ -1,0 +1,222 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: Service and Task, no ALB
+Parameters:
+  Memory:
+    Type: Number
+    Default: 1024
+  Cpu:
+    Type: Number
+    Default: 512
+  AppName:
+    Type: String
+    MinLength: 1
+    Default: flask-app
+  AppEnv:
+    Type: String
+    Description: the environment of the app
+    Default: dev
+  ClusterStackName:
+    Type: String
+    Description: the name of the cluster stack
+    Default: no-alb-cluster
+Resources:
+  AppUser:
+    Type: AWS::IAM::User
+    Properties:
+      UserName: !Sub "svc-${AppName}-${AppEnv}"
+      Path: /
+  UserAccessKey:
+    Type: AWS::IAM::AccessKey
+    Properties:
+      UserName: !Ref AppUser
+  StackManagedPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      Description: !Sub "Managed policy for svc-${AppName}-${AppEnv}"
+      Users:
+        - !Ref 'AppUser'
+      Path: /
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          # - Action:
+          #   - s3:ListBucket
+          #   Resource:
+          #     - !Sub "arn:aws:s3:::${AWS::AccountId}-*"
+          #   Effect: Allow
+          # - Action:
+          #     - "*"
+          #   Resource:
+          #     - !Sub "arn:aws:s3:::${AWS::AccountId}-${AppName}/*"
+          #   Effect: Allow
+          # - Action:
+          #     - s3:ListBucket
+          #   Resource:
+          #     - !Sub "arn:aws:s3:::${AWS::AccountId}-${AppName}"
+          #   Effect: Allow
+          # - Action:
+          #     - "*"
+          #   Resource:
+          #     - !Sub "arn:aws:s3:::${AWS::AccountId}-${AppName}/*"
+          #   Effect: Allow
+          # - Action:
+          #     - sns:*
+          #   Resource:
+          #     - !Sub "arn:aws:sns:${AWS::Region}:${AWS::AccountId}:${AppName}-*-${AppEnv}"
+          #   Effect: Allow
+          # - Action:
+          #     - sqs:*
+          #   Resource: !Sub "arn:aws:sqs:${AWS::Region}:${AWS::AccountId}:${AppName}-*-${AppEnv}"
+          #   Effect: Allow
+          # - Action:
+          #     - kms:*
+          #   Resource: "*"
+          #   Effect: Allow
+          - Action:
+              - ecr:*
+            Resource: !Sub arn:aws:ecr:${AWS::Region}:${AWS::AccountId}:repository/${AppName}
+            Effect: Allow
+          - Effect: Allow
+            Action:
+              - logs:DescribeLogGroups
+            Resource: "*"
+          - Effect: Allow
+            Action:
+              - logs:*
+            Resource: !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:${AppName}-${AppEnv}:*
+          - Effect: Allow
+            Action:
+              - ssmmessages:*
+            Resource: "*"
+          - Effect: Allow
+            Action:
+              - ecs:ExecuteCommand
+            Condition:
+              StringEquals:
+                ecs:container-name: !Sub "${AppName}-*-${AppEnv}"
+            Resource:
+              - !Sub arn:aws:ecs:${AWS::Region}:${AWS::AccountId}:cluster/*
+  ECR:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: !Ref AppName
+  TaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub svc-${AppName}-${AppEnv}-task-role
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: 'sts:AssumeRole'
+      ManagedPolicyArns:
+        - !Ref StackManagedPolicy
+  TaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      RequiresCompatibilities:
+        - FARGATE
+      Memory: !Ref Memory
+      Cpu: !Ref Cpu
+      NetworkMode: awsvpc
+      ExecutionRoleArn: 
+        Fn::ImportValue:
+          !Sub ${ClusterStackName}-task-execution-role
+      TaskRoleArn: !GetAtt TaskRole.Arn
+      ContainerDefinitions:
+        - Name: !Sub "${AppName}-app-${AppEnv}"
+          Essential: true
+          Image: !Sub "${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${AppName}:latest"
+          PortMappings:
+            - ContainerPort: 80
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Sub '${AppName}-app-${AppEnv}'
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: "ecs"
+  TaskDefinitionAppLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '${AppName}-app-${AppEnv}'
+      RetentionInDays: 5
+  ClusterService:
+    Type: AWS::ECS::Service
+    Properties:
+      Cluster: 
+        Fn::ImportValue:  
+          !Sub "${ClusterStackName}-cluster-name"
+      ServiceName: !Sub "${AppName}-${AppEnv}"
+      DesiredCount: 0
+      DeploymentConfiguration:
+        MaximumPercent: 200
+        MinimumHealthyPercent: 100
+      TaskDefinition: !Ref TaskDefinition
+      LaunchType: FARGATE
+      ServiceRegistries:
+        - RegistryArn: !GetAtt DiscoveryService.Arn
+          Port: 80
+      NetworkConfiguration: 
+        AwsvpcConfiguration:
+          AssignPublicIp: DISABLED
+          Subnets:
+            - Fn::ImportValue: !Sub "${ClusterStackName}-public-subnet-one"
+            - Fn::ImportValue: !Sub "${ClusterStackName}-public-subnet-two"
+          SecurityGroups:
+            - Fn::ImportValue:  
+                !Sub "${ClusterStackName}-container-security-group"
+      EnableExecuteCommand: true
+  DiscoveryService:
+    Type: AWS::ServiceDiscovery::Service
+    Properties: 
+      Description: Discovery Service for the Demo Application
+      DnsConfig:
+        RoutingPolicy: MULTIVALUE
+        DnsRecords:
+          - TTL: 60
+            Type: A
+          - TTL: 60
+            Type: SRV
+      HealthCheckCustomConfig: 
+        FailureThreshold: 1
+      Name: !Sub '${AppName}-${AppEnv}'
+      NamespaceId: 
+        Fn::ImportValue: 
+          !Sub ${ClusterStackName}-namespace
+  # S3Bucket:
+  #   Type: AWS::S3::Bucket
+  #   Properties:
+  #     BucketName: !Sub "${AWS::AccountId}-${AppName}"
+  #     BucketEncryption:
+  #       ServerSideEncryptionConfiguration:
+  #         - ServerSideEncryptionByDefault:
+  #             SSEAlgorithm: AES256
+  #     VersioningConfiguration:
+  #       Status: Enabled
+  #     AccessControl: Private
+  #     PublicAccessBlockConfiguration:
+  #       BlockPublicAcls: true
+  #       BlockPublicPolicy: true
+  #       IgnorePublicAcls: true
+  #       RestrictPublicBuckets: true
+  #     CorsConfiguration:
+  #       CorsRules:
+  #         - AllowedHeaders:
+  #             - "*"
+  #           AllowedMethods:
+  #             - GET
+  #           AllowedOrigins:
+  #             - "*"
+  #           MaxAge: 3000
+  # SNSDefault:
+  #   Type: AWS::SNS::Topic
+  #   Properties:
+  #     TopicName: !Sub "${AppName}-default-${AppEnv}"
+  # SQSDefaultActive:
+  #   Type: AWS::SQS::Queue
+  #   Properties:
+  #     VisibilityTimeout: 43200
+  #     QueueName: !Sub "${AppName}-default-${AppEnv}"
+  #     KmsMasterKeyId: alias/aws/sqs
+  #     KmsDataKeyReusePeriodSeconds: 500

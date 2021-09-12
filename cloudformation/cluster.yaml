@@ -1,0 +1,454 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: Create the VPC, Subnets, IGW, Cluster, RDS, EFS, Exection Role and ALB for env
+Parameters:
+  ClusterEnvironment:
+    Description: The environment being deployed to
+    Type: String
+    Default: nprod
+    AllowedValues:
+      - nprod
+      - prod
+  ClusterName:
+    Description: The name of the application being deployed
+    Type: String
+    Default: fargate
+  ClusterNumber:
+    Description: The unique number of the cluster
+    Type: String
+    Default: '01'
+  # RDSRootUser:
+  #   Description: The RDS root user
+  #   Type: String
+  # RDSRootPassword:
+  #   Description: The RDS root password
+  #   Type: String
+  #   NoEcho: true
+  # RDSInstanceClass:
+  #   Description: The RDS instance class
+  #   Type: String
+  #   Default: db.t2.small
+  # RDSAllocatedStorage:
+  #   Description: The RDS allocated storage
+  #   Type: String
+  #   Default: 20
+  # RDSEngineVersion:
+  #   Description: The RDS engine version
+  #   Type: String
+  #   Default: 8.0
+  # ElastiCacheInstanceType:
+  #   Description: The ElastiCache instance type
+  #   Type: String
+  #   Default: cache.t2.small
+  # AuthToken:
+  #   Description: The Redis Auth Token
+  #   Type: String
+  #   Default: c38w23ZBFBaQCWew2
+Resources:
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      CidrBlock: '10.0.0.0/16'
+  PublicSubnetOne:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone:
+        Fn::Select:
+          - 1
+          - Fn::GetAZs: {Ref: 'AWS::Region'}
+      VpcId: !Ref 'VPC'
+      CidrBlock: "10.0.0.0/24"
+      MapPublicIpOnLaunch: true
+  PublicSubnetTwo:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone:
+        Fn::Select:
+          - 1
+          - Fn::GetAZs: {Ref: 'AWS::Region'}
+      VpcId: !Ref 'VPC'
+      CidrBlock:  "10.0.11.0/24"
+      MapPublicIpOnLaunch: true
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+  GatewayAttachement:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref 'VPC'
+      InternetGatewayId: !Ref 'InternetGateway'
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref 'VPC'
+  PublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: GatewayAttachement
+    Properties:
+      RouteTableId: !Ref 'PublicRouteTable'
+      DestinationCidrBlock: '0.0.0.0/0'
+      GatewayId: !Ref 'InternetGateway'
+  PublicSubnetOneRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnetOne
+      RouteTableId: !Ref PublicRouteTable
+  PublicSubnetTwoRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnetTwo
+      RouteTableId: !Ref PublicRouteTable
+  ContainerSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Access to the Fargate containers
+      VpcId: !Ref 'VPC'
+  ECSTaskExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${ClusterName}-task-execution-role
+      AssumeRolePolicyDocument:
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service: [ecs-tasks.amazonaws.com]
+          Action: ['sts:AssumeRole']
+      Path: /
+      ManagedPolicyArns:
+        - 'arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy'
+  Cluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: !Sub ${ClusterNumber}-${ClusterName}-${ClusterEnvironment}
+      ClusterSettings:
+        - Name: containerInsights
+          Value: enabled
+  ClusterNamespace:
+    Type: AWS::ServiceDiscovery::PrivateDnsNamespace
+    Properties:
+        Name: rt.codes
+        Vpc: !Ref VPC
+Outputs:
+  Namespace:
+    Description: The namespace for the cluster
+    Value: !Ref ClusterNamespace
+    Export:
+      Name: !Sub "${AWS::StackName}-namespace"
+  ECSTaskExecutionRole:
+    Description: The ARN of the ECS role
+    Value: !GetAtt 'ECSTaskExecutionRole.Arn'
+    Export:
+      Name: !Sub "${AWS::StackName}-task-execution-role"
+  VpcId:
+    Description: The ID of the VPC that this stack is deployed in
+    Value: !Ref 'VPC'
+    Export:
+      Name: !Sub "${AWS::StackName}-vpc-id"
+  PublicSubnetOne:
+    Description: Public subnet one
+    Value: !Ref 'PublicSubnetOne'
+    Export:
+      Name: !Sub "${AWS::StackName}-public-subnet-one"
+  PublicSubnetTwo:
+    Description: Public subnet two
+    Value: !Ref 'PublicSubnetTwo'
+    Export:
+      Name: !Sub "${AWS::StackName}-public-subnet-two"
+  ClusterName:
+    Description: Cluster Name
+    Value: !Ref Cluster
+    Export:
+      Name: !Sub "${AWS::StackName}-cluster-name"
+  ContainerSecurityGroup:
+    Description: A security group used to allow Fargate containers to receive traffic
+    Value: !Ref 'ContainerSecurityGroup'
+    Export:
+      Name: !Sub "${AWS::StackName}-container-security-group"
+  # ALB:
+  #   Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+  #   Properties:
+  #     Name: !Sub sc-alb-${ClusterNumber}-${ClusterName}-${ClusterEnvironment}
+  #     SecurityGroups:
+  #       - !Ref LoadBalancerSecurityGroup
+  #     Subnets: 
+  #       - !Sub '{{resolve:ssm:/cat/cfn-params/${AWS::AccountId}/${AWS::Region}/${ClusterEnvironment}/PublicSubnetId1}}'
+  #       - !Sub '{{resolve:ssm:/cat/cfn-params/${AWS::AccountId}/${AWS::Region}/${ClusterEnvironment}/PublicSubnetId2}}'
+  #     LoadBalancerAttributes:
+  #       - Key: access_logs.s3.enabled
+  #         Value: 'true'
+  #       - Key: access_logs.s3.bucket
+  #         Value: !Sub '{{resolve:ssm:/cat/cfn-params/${AWS::AccountId}/${AWS::Region}/${ClusterEnvironment}/NProdELBLoggingBucket}}'
+  #       - Key: access_logs.s3.prefix
+  #         Value: !Sub 'sc-alb-${ClusterNumber}-${ClusterName}-${ClusterEnvironment}'
+  # DefaultTargetGroupSSL:
+  #   Type: AWS::ElasticLoadBalancingV2::TargetGroup
+  #   Properties:
+  #     Name: !Sub sc-https-${ClusterNumber}-${ClusterEnvironment}
+  #     Port: 443
+  #     Protocol: HTTPS
+  #     VpcId: !Sub '{{resolve:ssm:/cat/cfn-params/${AWS::AccountId}/${AWS::Region}/${ClusterEnvironment}/VPCID}}'
+  # DefaultTargetGroupNonSSL:
+  #   Type: AWS::ElasticLoadBalancingV2::TargetGroup
+  #   Properties:
+  #     Name: !Sub sc-http-${ClusterNumber}-${ClusterEnvironment}
+  #     Port: 80
+  #     Protocol: HTTP
+  #     VpcId: !Sub '{{resolve:ssm:/cat/cfn-params/${AWS::AccountId}/${AWS::Region}/${ClusterEnvironment}/VPCID}}'
+  # SSLListener:
+  #   Type: AWS::ElasticLoadBalancingV2::Listener
+  #   Properties:
+  #     SslPolicy: ELBSecurityPolicy-TLS-1-2-2017-01
+  #     Certificates:
+  #       - CertificateArn: !Sub '{{resolve:ssm:/cat/cfn-params/${AWS::AccountId}/${AWS::Region}/${ClusterEnvironment}/SSLCert}}'
+  #     DefaultActions:
+  #       - TargetGroupArn: !Ref DefaultTargetGroupSSL
+  #         Type: forward
+  #     LoadBalancerArn: !Ref ALB
+  #     Port: 443
+  #     Protocol: HTTPS
+  # NonSSLListener:
+  #   Type: AWS::ElasticLoadBalancingV2::Listener
+  #   Properties:
+  #     DefaultActions:
+  #       - TargetGroupArn: !Ref DefaultTargetGroupNonSSL
+  #         Type: forward
+  #     LoadBalancerArn: !Ref ALB
+  #     Port: 80
+  #     Protocol: HTTP
+  # RDS:
+  #   Type: AWS::RDS::DBInstance
+  #   Properties:
+  #     DBInstanceIdentifier: !Sub sc-rds-${ClusterNumber}-${ClusterName}-${ClusterEnvironment}
+  #     DBInstanceClass: !Ref RDSInstanceClass
+  #     Engine: MySQL
+  #     EngineVersion: !Ref RDSEngineVersion
+      # MasterUsername: !Ref RDSRootUser
+      # MasterUserPassword: !Ref RDSRootPassword
+      # DBName: !Sub ${ClusterNumber}_${ClusterName}_${ClusterEnvironment}
+      # PubliclyAccessible: false
+      # StorageType: gp2
+      # StorageEncrypted: true
+      # PreferredBackupWindow: 22:00-02:00
+      # PreferredMaintenanceWindow: wed:02:00-wed:06:00
+      # BackupRetentionPeriod: 14
+      # MonitoringRoleArn: !Sub 'arn:aws:iam::${AWS::AccountId}:role/dset-rds-enhanced-monitoring'
+      # MonitoringInterval: 60
+      # VPCSecurityGroups: 
+      #   - !Ref RDSSecurityGroup
+      # DBSubnetGroupName: !Ref RDSSubnetGroup
+      # AllocatedStorage: !Ref RDSAllocatedStorage
+  # RDSSubnetGroup:
+  #   Type: AWS::RDS::DBSubnetGroup
+  #   Properties: 
+  #     DBSubnetGroupDescription: !Sub Subnet Group for sc-${ClusterNumber}-${ClusterName}-${ClusterEnvironment}
+  #     DBSubnetGroupName: !Sub sc-rds-sn-${ClusterNumber}-${ClusterName}-${ClusterEnvironment}
+  #     SubnetIds: 
+  #       - !Sub '{{resolve:ssm:/cat/cfn-params/${AWS::AccountId}/${AWS::Region}/${ClusterEnvironment}/PrivateSubnetId1}}'
+  #       - !Sub '{{resolve:ssm:/cat/cfn-params/${AWS::AccountId}/${AWS::Region}/${ClusterEnvironment}/PrivateSubnetId2}}'
+  # ElastiCacheCluster:
+  #   Type: AWS::ElastiCache::ReplicationGroup
+  #   Properties:
+  #     ReplicationGroupDescription: !Sub sc-ec-${ClusterNumber}-${ClusterName}-${ClusterEnvironment}
+  #     CacheNodeType: !Ref ElastiCacheInstanceType
+  #     Engine: redis
+  #     EngineVersion: 6.x
+  #     AutoMinorVersionUpgrade: true
+  #     CacheParameterGroupName: default.redis6.x
+  #     AutomaticFailoverEnabled: false
+  #     NumCacheClusters: 1
+  #     AtRestEncryptionEnabled: true
+  #     MultiAZEnabled: false
+  #     CacheSubnetGroupName: !Ref ElastiCacheSubnet
+  #     SecurityGroupIds:
+  #       - !GetAtt ElastiCacheSecurityGroup.GroupId
+  #     Port: 6379
+  #     PreferredMaintenanceWindow: wed:02:00-wed:06:00
+  #     SnapshotRetentionLimit: 0 # disables snapshots
+  #     TransitEncryptionEnabled: true
+  #     AuthToken: !Ref AuthToken
+  # ElastiCacheSubnet:
+  #   Type: AWS::ElastiCache::SubnetGroup
+  #   Properties:
+  #     Description: !Sub 'sc-ec-sn-${ClusterNumber}-${ClusterName}-${ClusterEnvironment}'
+  #     SubnetIds: 
+  #       - !Sub '{{resolve:ssm:/cat/cfn-params/${AWS::AccountId}/${AWS::Region}/${ClusterEnvironment}/PrivateSubnetId1}}'
+  #       - !Sub '{{resolve:ssm:/cat/cfn-params/${AWS::AccountId}/${AWS::Region}/${ClusterEnvironment}/PrivateSubnetId2}}'
+  # LoadBalancerSecurityGroup:
+  #   Type: AWS::EC2::SecurityGroup
+  #   Properties:
+  #     GroupDescription: !Sub 'sc-alb-sg-${ClusterNumber}-${ClusterName}-${ClusterEnvironment}'
+  #     VpcId: !Sub '{{resolve:ssm:/cat/cfn-params/${AWS::AccountId}/${AWS::Region}/${ClusterEnvironment}/VPCID}}'
+  #     SecurityGroupIngress:
+  #       - IpProtocol: tcp
+  #         FromPort: 443
+  #         ToPort: 443
+  #       - IpProtocol: tcp
+  #         FromPort: 80
+  #         ToPort: 80
+          # SourceSecurityGroupId: !Ref LoadBalancerSecurityGroup
+  # ElastiCacheSecurityGroup:
+  #   Type: AWS::EC2::SecurityGroup
+  #   Properties:
+  #     GroupDescription: !Sub 'sc-ec-sg-${ClusterNumber}-${ClusterName}-${ClusterEnvironment}'
+  #     VpcId: !Sub '{{resolve:ssm:/cat/cfn-params/${AWS::AccountId}/${AWS::Region}/${ClusterEnvironment}/VPCID}}'
+  #     SecurityGroupIngress:
+  #       - IpProtocol: tcp
+  #         FromPort: 6379
+  #         ToPort: 6379
+  #         SourceSecurityGroupId: !Ref ContainerSecurityGroup
+  # RDSSecurityGroup:
+  #   Type: AWS::EC2::SecurityGroup
+  #   Properties:
+  #     GroupDescription: !Sub 'sc-rds-sg-${ClusterNumber}-${ClusterName}-${ClusterEnvironment}'
+  #     VpcId: !Sub '{{resolve:ssm:/cat/cfn-params/${AWS::AccountId}/${AWS::Region}/${ClusterEnvironment}/VPCID}}'
+  #     SecurityGroupIngress:
+  #       - ToPort: 3306
+  #         FromPort: 3306
+  #         IpProtocol: tcp
+  #         SourceSecurityGroupId: !Ref ContainerSecurityGroup
+  # EFSSecurityGroup:
+  #   Type: AWS::EC2::SecurityGroup
+  #   Properties:
+  #     GroupDescription: !Sub 'sc-efs-sg-${ClusterNumber}-${ClusterName}-${ClusterEnvironment}'
+  #     VpcId: !Sub '{{resolve:ssm:/cat/cfn-params/${AWS::AccountId}/${AWS::Region}/${ClusterEnvironment}/VPCID}}'
+  #     SecurityGroupIngress:
+  #       - IpProtocol: tcp
+  #         SourceSecurityGroupId: !Ref ContainerSecurityGroup
+  #         FromPort: 2049
+  #         ToPort: 2049
+  #         Description: NFS Access Rule
+  # EFSystem:
+  #   Type: AWS::EFS::FileSystem
+  #   Properties:
+  #     PerformanceMode: generalPurpose
+  #     Encrypted: True
+  # EFSMountTargetResource1:
+  #   Type: AWS::EFS::MountTarget
+  #   Properties:
+  #     FileSystemId: !Ref EFSystem
+  #     SubnetId: !Sub '{{resolve:ssm:/cat/cfn-params/${AWS::AccountId}/${AWS::Region}/${ClusterEnvironment}/PrivateSubnetId1}}'
+  #     SecurityGroups:
+  #       - !Ref EFSSecurityGroup
+  # EFSMountTargetResource2:
+  #   Type: AWS::EFS::MountTarget
+  #   Properties:
+  #     FileSystemId: !Ref EFSystem
+  #     SubnetId: !Sub '{{resolve:ssm:/cat/cfn-params/${AWS::AccountId}/${AWS::Region}/${ClusterEnvironment}/PrivateSubnetId2}}'
+  #     SecurityGroups:
+  #       - !Ref EFSSecurityGroup
+  # ClusterSecrets:
+  #   Type: AWS::SecretsManager::Secret
+  #   Properties:
+  #     Name: !Sub 'cat/sc-${ClusterNumber}-${ClusterName}-${ClusterEnvironment}/core'
+  #     Description: !Sub 'database user and password for sc-${ClusterNumber}-${ClusterName}-${ClusterEnvironment}'
+  #     SecretString: !Sub '{"username": "${RDSRootUser}","password": "${RDSRootPassword}","host": "${RDS.Endpoint.Address}"}'
+  # ALBArn:
+  #   Description: ALB Arn
+  #   Value: !Ref ALB
+  #   Export:
+  #     Name: !Sub "${AWS::StackName}-alb-arn"
+  # ALBCanonicalHostedZoneID:
+  #   Description: ALB Arn
+  #   Value: !GetAtt ALB.CanonicalHostedZoneID
+  #   Export:
+  #     Name: !Sub "${AWS::StackName}-alb-canonical-hosted-zone-id"
+  # ALBFQDNS:
+  #   Description: ALB DNS Name
+  #   Value: !GetAtt ALB.DNSName
+  #   Export:
+  #     Name: !Sub "${AWS::StackName}-alb-dns-name"
+  # ALBFullName:
+  #   Description: ALB LoadBalancerFullName
+  #   Value: !GetAtt ALB.LoadBalancerFullName
+  #   Export:
+  #     Name: !Sub "${AWS::StackName}-alb-full-name"
+  # ALBName:
+  #   Description: ALB name
+  #   Value: !GetAtt ALB.LoadBalancerName
+  #   Export:
+  #     Name: !Sub "${AWS::StackName}-alb-name"
+  # SSLListenerArn:
+  #   Description: SSL Listener ARN
+  #   Value: !Ref SSLListener
+  #   Export:
+  #     Name: !Sub "${AWS::StackName}-ssl-listener-arn"
+  # NonSSLListenerArn:
+  #   Description: Non-SSL Listener ARN
+  #   Value: !Ref NonSSLListener
+  #   Export:
+  #     Name: !Sub "${AWS::StackName}-non-ssl-listener-arn"
+  # RDSName:
+  #   Description: RDS Instance Name
+  #   Value: !Ref RDS
+  #   Export:
+  #     Name: !Sub "${AWS::StackName}-rds-instance-name"
+  # RDSEndpointAddress:
+  #   Description: RDS Instance Endpoint Address
+  #   Value: !GetAtt RDS.Endpoint.Address
+  #   Export:
+  #     Name: !Sub "${AWS::StackName}-rds-instance-endpoint-address"
+  # RDSEndpointPort:
+  #   Description: RDS Instance Endpoint Port
+  #   Value: !GetAtt RDS.Endpoint.Port
+  #   Export:
+  #     Name: !Sub "${AWS::StackName}-rds-instance-endpoint-port"
+  # ElastiCachePrimaryEndPointAddress:
+  #   Description: ElastiCache Primary Endpoint Address
+  #   Value: !GetAtt ElastiCacheCluster.PrimaryEndPoint.Address
+  #   Export:
+  #     Name: !Sub "${AWS::StackName}-elasticache-primary-endpoint-address"
+  # ElastiCachePrimaryEndPointPort:
+  #   Description: ElastiCache Primary Endpoint Port
+  #   Value: !GetAtt ElastiCacheCluster.PrimaryEndPoint.Port
+  #   Export:
+  #     Name: !Sub "${AWS::StackName}-elasticache-primary-endpoint-port"
+  # ElasticacheReadEndPointAddress:
+  #   Description: ElastiCache Read Endpoint Address
+  #   Value: !GetAtt ElastiCacheCluster.ReaderEndPoint.Address
+  #   Export:
+  #     Name: !Sub "${AWS::StackName}-elasticache-read-endpoint-address"
+  # ElasticacheReadEndPointPort:
+  #   Description: ElastiCache Read Endpoint Port
+  #   Value: !GetAtt ElastiCacheCluster.ReaderEndPoint.Port
+  #   Export:
+  #     Name: !Sub "${AWS::StackName}-elasticache-read-endpoint-port"
+  # ElastiCacheSecurityGroup:
+  #   Description: ElastiCache Security Group
+  #   Value: !GetAtt ElastiCacheSecurityGroup.GroupId
+  #   Export:
+  #     Name: !Sub "${AWS::StackName}-elasticache-security-group"
+  # LoadBalancerSecurityGroup:
+  #   Description: LoadBalancer Security Group
+  #   Value: !GetAtt LoadBalancerSecurityGroup.GroupId
+  #   Export:
+  #     Name: !Sub "${AWS::StackName}-loadbalancer-security-group"
+  # RDSSecurityGroup:
+  #   Description: RDS Security Group
+  #   Value: !GetAtt RDSSecurityGroup.GroupId
+  #   Export:
+  #     Name: !Sub "${AWS::StackName}-rds-security-group"
+  # EFSSecurityGroup:
+  #   Description: EFS Security Group
+  #   Value: !GetAtt EFSSecurityGroup.GroupId
+  #   Export:
+  #     Name: !Sub "${AWS::StackName}-efs-security-group"
+  # EFSystem:
+  #   Description: EFS
+  #   Value: !Ref EFSystem
+  #   Export:
+  #     Name: !Sub "${AWS::StackName}-efs"
+  # EFSMountTargetResource1:
+  #   Description: Mount Target ID 1
+  #   Value: !Ref EFSMountTargetResource1
+  #   Export:
+  #     Name: !Sub "${AWS::StackName}-EFSMountTargetResource1"
+  # EFSMountTargetResource2:
+  #   Description: Mount Target ID 2
+  #   Value: !Ref EFSMountTargetResource2
+  #   Export:
+  #     Name: !Sub "${AWS::StackName}-EFSMountTargetResource2"
+  # ClusterSecrets:
+  #   Description: Cluster Secrets
+  #   Value: !Ref ClusterSecrets
+  #   Export:
+  #     Name: !Sub "${AWS::StackName}-cluster-secrets"
